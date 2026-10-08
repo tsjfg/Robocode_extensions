@@ -1,0 +1,13 @@
+{
+    "id": "TeStQmZxNvRbLhJdWkCp",
+    "name": "数据测试",
+    "description": "数据测试扩展积木：支持舵机转动与速度控制，可测试并将四路舵机角度、马达编码值显示在屏幕上",
+    "icon": "",
+    "cover": "test.png",
+    "codeTypes": [
+        "Python"
+    ],
+    "order": "1",
+    "supportDevice": ["E6","E7","M6"],
+    "official": false
+}

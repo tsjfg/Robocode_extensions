@@ -1,0 +1,13 @@
+{
+    "id": "OMEOGiWRIHpRTBrbIlzv",
+    "name": "舵机狗",
+    "description": "扩展描述",
+    "icon": "",
+    "cover": "OMEOGiWRIHpRTBrbIlzv.png",
+    "codeTypes": [
+        "Python"
+    ],
+    "order": "1",
+    "supportDevice": ["E6","E7","M6"],
+    "official": false
+}

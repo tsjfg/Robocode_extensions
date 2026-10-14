@@ -110,8 +110,9 @@ def show_motor_code():
                     const Py = ScratchBlocks.Python;
 
                     // 屏幕为 240(X) x 320(Y)，用 2 列 x 4 行划出 8 个任务格
+                    // 实测：Y 轴向上增长，故「任务1在下方」对应 y 较小的一端
                     const dirUp =
-                        String(block.getFieldValue("PANEL_DIR") || "1") === "1";
+                        String(block.getFieldValue("PANEL_DIR") || "2") === "1";
                     const rowYs = dirUp ? [250, 180, 110, 40] : [40, 110, 180, 250];
                     const colXs = [0, 120];
                     const cells = [];
@@ -131,9 +132,14 @@ def show_motor_code():
                         bodies.push(Py.addIndentation(body));
                     }
                     // 任务函数内若用到变量，需要 global 声明（与自定义积木一致）
+                    // 注意：Globals() 自身已带一层缩进，这里再补一层，
+                    // 并去掉 def 行尾残留的空白
                     const globalsRaw = Py.Globals();
                     const globalsLine = globalsRaw
-                        ? Py.addIndentation(globalsRaw)
+                        ? Py.addIndentation(globalsRaw).replace(
+                              /^[ \t]*\n/,
+                              "\n"
+                          )
                         : "";
 
                     const taskDefs = bodies.map(function (body, idx) {
@@ -260,7 +266,7 @@ def show_motor_code():
                         PANEL_DIR: {
                             type: ArgumentType.STRING,
                             menu: "menu_panel_dir",
-                            defaultValue: "1",
+                            defaultValue: "2",
                         },
                     },
                 },
@@ -321,12 +327,12 @@ def show_motor_code():
     menu_panel_dir() {
         return [
             {
-                text: "任务1在上方",
-                value: "1",
-            },
-            {
                 text: "任务1在下方",
                 value: "2",
+            },
+            {
+                text: "任务1在上方",
+                value: "1",
             },
         ];
     }

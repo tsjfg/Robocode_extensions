@@ -11,21 +11,72 @@ import trace
 #  PID 巡线底层   —— 由「PID巡线」扩展自动生成
 #
 #  传感器安装：车头朝前，从车的左侧到右侧依次编号
-#      4 光电 (E007 = 4) ： P1 P2 P3 P4     权重 [-3, -1, +1, +3]
+#      4 光电 (E007 = 4) ： P1 P2 P3 P4
+#           巡线  -> 差值法：误差 = 光值(P3) - 光值(P2)，直接用原始模拟光值
+#           压线  -> sensor.GetLightSensorData(i) == var_xun_xian_yan_se
 #      循迹卡 (E007 = 7) ： 插在 P1 端口，通道 1~7
-#                           权重 [-3, -2, -1, 0, +1, +2, +3]
-#  error 归一化到 ±100 ： 正 = 线在车的右侧 = 需要向右修正
+#           巡线  -> 重心法：权重 [-3,-2,-1,0,+1,+2,+3]，error 归一化到 ±100
+#           压线  -> trace.GetTraceV2I2CState(P1端口, i) == var_xun_xian_yan_se
 # ============================================================
 
-# ---------------- 可调参数（也可用「设置PID参数」积木改） ----------------
-PID_KP         = 0.80    # 比例项：绝对主力，先调它
-PID_KI         = 0.00    # 积分项：消左右电机不对称，一般不用
-PID_KD         = 1.60    # 微分项：抑制摆动；4 光电建议取 Kp 的 2~3 倍
-PID_BASE       = 50      # 基础速度：必须大于电机死区
+# ------- 马达类型：E005（1 = 白红电机，2 = 灰红电机）-------
+#  两种电机的等效增益 / 死区不同，同一套 PID 参数不可能都合适
+#  （实测：循迹卡 + 白红电机 Kp=0.8/Ki=0/Kd=1.6 刚好，换灰红电机就明显摇摆）
+#  所以下面每个参数都存两列，运行时按 E005 自动选用对应那一列。
+PID_MOTOR_ADDR = 5       # E005：马达类型地址
+PID_MOTOR_WR   = 1       # 1 = 白红电机
+PID_MOTOR_GR   = 2       # 2 = 灰红电机
+
+# ------- 参数表，格式 [白红, 灰红] -------
+#  循迹卡（7 光电）重心法
+PID_KP_TAB     = [0.80, 0.40]   # 灰红摇摆明显 -> 默认把 Kp 减半
+PID_KI_TAB     = [0.00, 0.00]
+PID_KD_TAB     = [1.60, 1.60]   # Kp 减半后 Kd 相对更大，阻尼比更高，正好压摇摆
+#  4 光电差值法（误差 = 光值(P3) - 光值(P2)，直接用原始模拟光值，不归一化）
+#      线在左（P2 更黑）-> 光值(P2) 更小 -> 误差为正
+#      线在右（P3 更黑）-> 误差为负
+#      修正量 = 误差*Kp4 + 积分*Ki4 + (误差-上次误差)*Kd4
+#      最终   左轮 = 速度 - 修正量      右轮 = 速度 + 修正量
+PID_KP4_TAB    = [0.015, 0.010]
+PID_KI4_TAB    = [0.000, 0.000]
+PID_KD4_TAB    = [0.030, 0.030]
+#  基础速度
+PID_BASE_TAB   = [50, 50]
+
+# ------- 当前生效值（由 apply_motor_param() 按 E005 装载）-------
+PID_KP         = PID_KP_TAB[0]
+PID_KI         = PID_KI_TAB[0]
+PID_KD         = PID_KD_TAB[0]
+PID_KP4        = PID_KP4_TAB[0]
+PID_KI4        = PID_KI4_TAB[0]
+PID_KD4        = PID_KD4_TAB[0]
+PID_BASE       = PID_BASE_TAB[0]
+
 PID_MAX_OUT    = 60      # 差速限幅（±）
-PID_DEADZONE   = 0       # 电机死区（速度单位 0~100），实测后填
-PID_MIN_SUM    = 30      # 压线总和下限，低于此值（即一路都没压线）判为脱线
+PID_MIN_SUM    = 30      # 黑度总和下限，低于此值（即一路都没压线）判为脱线
 PID_SIGN_TH    = 3       # 误差超过此值才记录方向（抗噪）
+PID_I4_LIMIT   = 20000   # 4 光电差值法的积分限幅（光值单位），防止积分饱和
+
+def motor_idx():
+    # E005：1 = 白红 -> 参数表索引 0 ；2 = 灰红 -> 索引 1
+    if rcu.GetData(PID_MOTOR_ADDR) == PID_MOTOR_GR:
+        return 1
+    return 0
+
+def apply_motor_param():
+    # 按 E005 把对应电机的参数装载到「当前生效值」上
+    # 每次巡线周期调用一次，所以中途换电机类型 / 改参数也能立刻生效
+    global PID_KP, PID_KI, PID_KD, PID_KP4, PID_KI4, PID_KD4, PID_BASE
+    i = motor_idx()
+    PID_KP   = PID_KP_TAB[i]
+    PID_KI   = PID_KI_TAB[i]
+    PID_KD   = PID_KD_TAB[i]
+    PID_KP4  = PID_KP4_TAB[i]
+    PID_KI4  = PID_KI4_TAB[i]
+    PID_KD4  = PID_KD4_TAB[i]
+    PID_BASE = PID_BASE_TAB[i]
+
+PID_DEADZONE   = 0       # 电机死区（速度单位 0~100），实测后填
 PID_MODE_ADDR  = 7       # E007：巡线模式地址
 PID_MODE_TRACE = 7       # 该地址 == 7 用循迹卡，否则用 4 光电
 PID_FORCE_MODE = 0       # 0 = 按 E007 自动判断；4 = 强制 4 光电；7 = 强制循迹卡
@@ -33,8 +84,6 @@ PID_OUT_ADDR   = 6       # E006：小车冲出路口的编码值（「+冲出」
 PID_EXIT_MAX   = 300     # 「开过路口」内循环的保险丝（次），防止路口位型一直不消失导致死循环
 PID_TRACE_PORT = 1       # 循迹卡插在哪个端口（P1~P8）
 PID_JUNC_EDGE  = 1       # 路口判定：最外侧连续几路压线才算。改成 2 可减少误判
-PID_ANALOG_MODE = 1      # 4 光电：1 = 用模拟光值（连续、更平滑）；0 = 用数字量
-PID_ANA_MIN_SPAN = 60    # 自动标定的最小黑白跨度，低于它按「没压线」处理
 
 var_xun_xian_yan_se = 1  # 巡线颜色：黑 = 1，白 = 0
 var_zhuan_wan_su_du = 40 # 「转到线」的转弯速度（固定 40）
@@ -45,16 +94,8 @@ var_zhuan_wan_su_du = 40 # 「转到线」的转弯速度（固定 40）
 PID_TURN_4 = [1, 3, 4, 2]
 PID_TURN_7 = [1, 4, 7, 4]
 
-# ---------------- 4 光电模拟量：自动标定 ----------------
-#  光值越黑越小。这里自动跟踪每路见过的最大/最小光值，把「白底 ~ 黑线」
-#  这一段拉伸成 0 ~ 100，所以不用手填标定值，也不管量程是 1023 还是 4095。
-#  想重新标定：把 _ana_init 置为 False 即可
-_ana_hi   = [0, 0, 0, 0]     # 每路见过的最大光值（最白）
-_ana_lo   = [0, 0, 0, 0]     # 每路见过的最小光值（最黑）
-_ana_init = False
-
 # ---------------- 传感器读取 ----------------
-#  4 光电 ： 模拟量 sensor.GetLightSensor(i)      ，数字量 sensor.GetLightSensorData(i)
+#  4 光电 ： 巡线用模拟量 sensor.GetLightSensor(i)；压线判断用数字量 GetLightSensorData(i)
 #  循迹卡 ： trace.GetTraceV2I2CState(P1端口, i)
 #  var_xun_xian_yan_se ： 黑线 = 1，白线 = 0
 def use_trace():
@@ -64,47 +105,15 @@ def use_trace():
         m = rcu.GetData(PID_MODE_ADDR)
     return m == PID_MODE_TRACE
 
-def read_black(i):
-    # 第 i 路的黑度：100 = 完全压线，0 = 完全在白底上
-    if use_trace():
-        return 100 if trace.GetTraceV2I2CState(PID_TRACE_PORT, i) == var_xun_xian_yan_se else 0
-    if not PID_ANALOG_MODE:
-        return 100 if sensor.GetLightSensorData(i) == var_xun_xian_yan_se else 0
-    # ---- 4 光电：模拟量 + 自动标定 ----
-    global _ana_init
-    j = i - 1
-    v = sensor.GetLightSensor(i)
-    if not _ana_init:
-        # 第一次读：用全阵列的极值当初始标定范围（车压在线上的那一瞬间正好是 黑~白）
-        r1 = sensor.GetLightSensor(1)
-        r2 = sensor.GetLightSensor(2)
-        r3 = sensor.GetLightSensor(3)
-        r4 = sensor.GetLightSensor(4)
-        hi = max(r1, r2, r3, r4)
-        lo = min(r1, r2, r3, r4)
-        for k in range(4):
-            _ana_hi[k] = hi
-            _ana_lo[k] = lo
-        _ana_init = True
-    if v > _ana_hi[j]:
-        _ana_hi[j] = v
-    if v < _ana_lo[j]:
-        _ana_lo[j] = v
-    span = _ana_hi[j] - _ana_lo[j]
-    if span < PID_ANA_MIN_SPAN:
-        return 0
-    b = (_ana_hi[j] - v) * 100 // span      # 越黑 -> b 越大
-    if b < 0:
-        b = 0
-    if b > 100:
-        b = 100
-    if var_xun_xian_yan_se == 0:            # 巡白线：取反
-        b = 100 - b
-    return b
-
 def on_line(i):
     # 第 i 路是否压线
-    return read_black(i) > 50
+    if use_trace():
+        return trace.GetTraceV2I2CState(PID_TRACE_PORT, i) == var_xun_xian_yan_se
+    return sensor.GetLightSensorData(i) == var_xun_xian_yan_se
+
+def read_black(i):
+    # 第 i 路的黑度：100 = 压线，0 = 没压线（只给循迹卡的重心法用）
+    return 100 if on_line(i) else 0
 
 # ---------------- 电机死区：限幅 → 补偿 → 再限幅 ----------------
 def dead_zone(sp):
@@ -125,7 +134,52 @@ def speed_control(spl, spr):
     motor.SetMotor(1, spl)
     motor.SetMotor(2, spr)
 
-# ---------------- PID 巡线核心：跑一个周期 ----------------
+# ---------------- 4 光电：差值巡线（P3 - P2），带 P / I / D 三项 ----------------
+_cz_last_err = 0.0
+_cz_integral = 0.0
+_cz_first    = True
+
+def chai_zhi_reset():
+    global _cz_last_err, _cz_integral, _cz_first
+    _cz_last_err = 0.0
+    _cz_integral = 0.0
+    _cz_first    = True
+
+def chai_zhi_xun_xian_once(su_du):
+    # 4 光电差值巡线，跑一个周期
+    global _cz_last_err, _cz_integral, _cz_first
+    apply_motor_param()          # 按 E005 装载当前电机的 Kp4 / Ki4 / Kd4
+    var_wu_cha_zhi = sensor.GetLightSensor(3) - sensor.GetLightSensor(2)
+
+    # ---- I 项：累加 + 限幅（防止积分饱和）----
+    _cz_integral = _cz_integral + var_wu_cha_zhi
+    if _cz_integral > PID_I4_LIMIT:
+        _cz_integral = PID_I4_LIMIT
+    elif _cz_integral < -PID_I4_LIMIT:
+        _cz_integral = -PID_I4_LIMIT
+
+    # ---- D 项：误差的变化率；第一次调用跳过，避免开机瞬间被猛拽一下 ----
+    if _cz_first:
+        var_wei_fen = 0.0
+        _cz_first = False
+    else:
+        var_wei_fen = var_wu_cha_zhi - _cz_last_err
+
+    var_zhuan_dong_su_du = (var_wu_cha_zhi * PID_KP4
+                            + _cz_integral * PID_KI4
+                            + var_wei_fen * PID_KD4)
+
+    if var_xun_xian_yan_se == 1:
+        speed_control(dead_zone(su_du - var_zhuan_dong_su_du),
+                      dead_zone(su_du + var_zhuan_dong_su_du))
+    else:
+        speed_control(dead_zone(su_du + var_zhuan_dong_su_du),
+                      dead_zone(su_du - var_zhuan_dong_su_du))
+
+    _cz_last_err = var_wu_cha_zhi
+    return var_zhuan_dong_su_du
+
+# ---------------- 循迹卡：重心法巡线核心：跑一个周期 ----------------
 _pid_integral  = 0.0
 _pid_last_err  = 0.0
 _pid_last_sign = 0
@@ -139,20 +193,24 @@ def pid_reset():
     _pid_last_sign = 0
     _pid_was_lost  = False
     _pid_first     = True
+    chai_zhi_reset()
 
 def xunxian_once(speed=None):
     # 巡线一次：读一次传感器 → 算一次 PID → 输出一次速度
+    #   4 光电 -> 差值法（chai_zhi_xun_xian_once）
+    #   循迹卡 -> 重心法（下面这段）
     global _pid_integral, _pid_last_err, _pid_last_sign, _pid_was_lost, _pid_first
+
+    apply_motor_param()          # 按 E005 装载当前电机的 Kp / Ki / Kd / 基础速度
 
     if speed is None:
         speed = PID_BASE
 
-    if use_trace():
-        n = 7
-        w = [-3, -2, -1, 0, 1, 2, 3]
-    else:
-        n = 4
-        w = [-3, -1, 1, 3]
+    if not use_trace():
+        return chai_zhi_xun_xian_once(speed)
+
+    n = 7
+    w = [-3, -2, -1, 0, 1, 2, 3]
 
     sum_v = 0.0
     sum_w = 0.0
@@ -351,14 +409,39 @@ def turn_bmz(spl, spr, bmp):
 # ============================================================
 
 # ---- 初始化 巡线颜色 [黑线] ----
-#      黑线 -> 判断压线用  == 1 ；白线 ->  == 0
+#      黑线 -> 压线判断用  == 1 ；白线 ->  == 0
 var_xun_xian_yan_se = 1
 
-# ---- 设置PID Kp [0.8] Ki [0] Kd [1.6] 基础速度 [50] ----
-PID_KP = 0.8
-PID_KI = 0
-PID_KD = 1.6
-PID_BASE = 50
+# ---- 设置PID 电机 [白红电机] Kp [0.8] Ki [0] Kd [1.6] 基础速度 [50] ----
+#      这一组是「循迹卡（7 光电）重心法」参数，按电机类型分开存
+PID_KP_TAB[0] = 0.8
+PID_KI_TAB[0] = 0
+PID_KD_TAB[0] = 1.6
+PID_BASE_TAB[0] = 50
+
+# ---- 设置PID 电机 [灰红电机] Kp [0.4] Ki [0] Kd [1.6] 基础速度 [50] ----
+#      灰红电机摇摆明显 -> Kp 减半（Kd 相对更大，阻尼比更高）
+PID_KP_TAB[1] = 0.4
+PID_KI_TAB[1] = 0
+PID_KD_TAB[1] = 1.6
+PID_BASE_TAB[1] = 50
+
+# ---- 设置4光电PID 电机 [白红电机] Kp [0.015] Ki [0] Kd [0.03] ----
+#      4 光电差值法用的是原始光值差，量纲和上面那组完全不同
+PID_KP4_TAB[0] = 0.015
+PID_KI4_TAB[0] = 0
+PID_KD4_TAB[0] = 0.03
+
+# ---- 设置4光电PID 电机 [灰红电机] Kp [0.01] Ki [0] Kd [0.03] ----
+PID_KP4_TAB[1] = 0.01
+PID_KI4_TAB[1] = 0
+PID_KD4_TAB[1] = 0.03
+
+# ------------------------------------------------------------
+#  以上四个积木把两种电机、两种阵列的参数都填好了。
+#  程序运行时按 E005（马达类型：1=白红 2=灰红）自动选用对应那一列，
+#  你换电机不用改程序。
+# ------------------------------------------------------------
 
 # ---- 巡线遇路口停 速度 [50] 路口类型 [左路口] 调整编码值 [0] ----
 #      调整编码值 = 0 -> 遇到左路口立刻停（停车时会响一声提示音）

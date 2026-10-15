@@ -17,73 +17,79 @@ import trace
 #      循迹卡 (E007 = 7) ： 插在 P1 端口，通道 1~7
 #           巡线  -> 重心法：权重 [-3,-2,-1,0,+1,+2,+3]，error 归一化到 ±100
 #           压线  -> trace.GetTraceV2I2CState(P1端口, i) == var_xun_xian_yan_se
+#
+#  PID 参数（Kp / Ki / Kd）不在积木里填，全部写死在下面的四组参数表里，
+#  运行时按 E005（电机类型）× E007（阵列类型）自动选用其中一组。
 # ============================================================
 
-# ------- 马达类型：E005（1 = 白红电机，2 = 灰红电机）-------
-#  两种电机的等效增益 / 死区不同，同一套 PID 参数不可能都合适
-#  （实测：循迹卡 + 白红电机 Kp=0.8/Ki=0/Kd=1.6 刚好，换灰红电机就明显摇摆）
-#  所以下面每个参数都存两列，运行时按 E005 自动选用对应那一列。
-PID_MOTOR_ADDR = 5       # E005：马达类型地址
-PID_MOTOR_WR   = 1       # 1 = 白红电机
-PID_MOTOR_GR   = 2       # 2 = 灰红电机
+# ------- 地址定义 -------
+PID_MOTOR_ADDR = 5       # E005：马达类型
+PID_MOTOR_WR   = 1       #   1 = 白红电机
+PID_MOTOR_GR   = 2       #   2 = 灰红电机
+PID_MODE_ADDR  = 7       # E007：巡线阵列类型
+PID_MODE_4     = 4       #   4 = 4 光电巡线
+PID_MODE_TRACE = 7       #   7 = 循迹卡巡线
+PID_FORCE_MODE = 0       # 0 = 按 E007 自动判断；4 = 强制 4 光电；7 = 强制循迹卡
+PID_OUT_ADDR   = 6       # E006：小车冲出路口的编码值（「+冲出」用）
 
-# ------- 参数表，格式 [白红, 灰红] -------
-#  循迹卡（7 光电）重心法
-PID_KP_TAB     = [0.80, 0.40]   # 灰红摇摆明显 -> 默认把 Kp 减半
-PID_KI_TAB     = [0.00, 0.00]
-PID_KD_TAB     = [1.60, 1.60]   # Kp 减半后 Kd 相对更大，阻尼比更高，正好压摇摆
-#  4 光电差值法（误差 = 光值(P3) - 光值(P2)，直接用原始模拟光值，不归一化）
+# ------- PID 参数表：四组，下标 = 电机序号 * 2 + 阵列序号 -------
+#     [0] 白红 + 4 光电      [1] 白红 + 循迹卡
+#     [2] 灰红 + 4 光电      [3] 灰红 + 循迹卡
+#
+#  4 光电走「差值法」：误差 = 光值(P3) - 光值(P2)，直接用原始模拟光值，
+#      量纲是几百~几千，所以 Kp / Kd 很小（0.0x 级）
 #      线在左（P2 更黑）-> 光值(P2) 更小 -> 误差为正
-#      线在右（P3 更黑）-> 误差为负
-#      修正量 = 误差*Kp4 + 积分*Ki4 + (误差-上次误差)*Kd4
-#      最终   左轮 = 速度 - 修正量      右轮 = 速度 + 修正量
-PID_KP4_TAB    = [0.015, 0.010]
-PID_KI4_TAB    = [0.000, 0.000]
-PID_KD4_TAB    = [0.030, 0.030]
-#  基础速度
-PID_BASE_TAB   = [50, 50]
+#      修正量 = 误差*Kp + 积分*Ki + (误差-上次误差)*Kd
+#      左轮 = 速度 - 修正量      右轮 = 速度 + 修正量
+#  循迹卡走「重心法」：误差已归一化到 ±100，量纲小，所以 Kp / Kd 是 1 附近
+#      实测：白红电机 Kp=0.8 / Ki=0 / Kd=1.6 刚好；
+#            灰红电机同样参数摇摆明显 -> Kp 减半，Kd 不变（阻尼比更高，正好压摇摆）
+#
+#  这两组量纲完全不同，所以必须分开存；两种电机增益不同，再分一层。
+PID_KP_TAB = [0.015, 0.80, 0.010, 0.40]
+PID_KI_TAB = [0.000, 0.00, 0.000, 0.00]
+PID_KD_TAB = [0.030, 1.60, 0.030, 1.60]
 
-# ------- 当前生效值（由 apply_motor_param() 按 E005 装载）-------
-PID_KP         = PID_KP_TAB[0]
-PID_KI         = PID_KI_TAB[0]
-PID_KD         = PID_KD_TAB[0]
-PID_KP4        = PID_KP4_TAB[0]
-PID_KI4        = PID_KI4_TAB[0]
-PID_KD4        = PID_KD4_TAB[0]
-PID_BASE       = PID_BASE_TAB[0]
+# ------- 当前生效值（由 apply_param() 按 E005 + E007 装载）-------
+PID_KP   = PID_KP_TAB[0]
+PID_KI   = PID_KI_TAB[0]
+PID_KD   = PID_KD_TAB[0]
+PID_BASE = 50            # 巡线基础速度缺省值（积木里传了速度就以积木为准）
 
+PID_DEADZONE   = 0       # 电机死区（速度单位 0~100），实测后填
 PID_MAX_OUT    = 60      # 差速限幅（±）
 PID_MIN_SUM    = 30      # 黑度总和下限，低于此值（即一路都没压线）判为脱线
 PID_SIGN_TH    = 3       # 误差超过此值才记录方向（抗噪）
 PID_I4_LIMIT   = 20000   # 4 光电差值法的积分限幅（光值单位），防止积分饱和
+PID_EXIT_MAX   = 300     # 「开过路口」内循环的保险丝（次），防止路口位型一直不消失导致死循环
+PID_TRACE_PORT = 1       # 循迹卡插在哪个端口（P1~P8）
+PID_JUNC_EDGE  = 1       # 路口判定：最外侧连续几路压线才算。改成 2 可减少误判
 
 def motor_idx():
-    # E005：1 = 白红 -> 参数表索引 0 ；2 = 灰红 -> 索引 1
+    # E005：1 = 白红 -> 0 ；2 = 灰红 -> 1 （异常值按白红处理）
     if rcu.GetData(PID_MOTOR_ADDR) == PID_MOTOR_GR:
         return 1
     return 0
 
-def apply_motor_param():
-    # 按 E005 把对应电机的参数装载到「当前生效值」上
-    # 每次巡线周期调用一次，所以中途换电机类型 / 改参数也能立刻生效
-    global PID_KP, PID_KI, PID_KD, PID_KP4, PID_KI4, PID_KD4, PID_BASE
-    i = motor_idx()
-    PID_KP   = PID_KP_TAB[i]
-    PID_KI   = PID_KI_TAB[i]
-    PID_KD   = PID_KD_TAB[i]
-    PID_KP4  = PID_KP4_TAB[i]
-    PID_KI4  = PID_KI4_TAB[i]
-    PID_KD4  = PID_KD4_TAB[i]
-    PID_BASE = PID_BASE_TAB[i]
+def mode_idx():
+    # E007：7 = 循迹卡 -> 1 ；4（或其它）= 4 光电 -> 0
+    m = PID_FORCE_MODE
+    if m == 0:
+        m = rcu.GetData(PID_MODE_ADDR)
+    return 1 if m == PID_MODE_TRACE else 0
 
-PID_DEADZONE   = 0       # 电机死区（速度单位 0~100），实测后填
-PID_MODE_ADDR  = 7       # E007：巡线模式地址
-PID_MODE_TRACE = 7       # 该地址 == 7 用循迹卡，否则用 4 光电
-PID_FORCE_MODE = 0       # 0 = 按 E007 自动判断；4 = 强制 4 光电；7 = 强制循迹卡
-PID_OUT_ADDR   = 6       # E006：小车冲出路口的编码值（「+冲出」用）
-PID_EXIT_MAX   = 300     # 「开过路口」内循环的保险丝（次），防止路口位型一直不消失导致死循环
-PID_TRACE_PORT = 1       # 循迹卡插在哪个端口（P1~P8）
-PID_JUNC_EDGE  = 1       # 路口判定：最外侧连续几路压线才算。改成 2 可减少误判
+def param_idx():
+    # 四组参数的下标 = 电机序号 * 2 + 阵列序号
+    return motor_idx() * 2 + mode_idx()
+
+def apply_param():
+    # 按 E005 + E007 把对应那一组装载到「当前生效值」上
+    # 每个巡线周期调用一次，所以中途换电机 / 换阵列也能立刻生效
+    global PID_KP, PID_KI, PID_KD
+    i = param_idx()
+    PID_KP = PID_KP_TAB[i]
+    PID_KI = PID_KI_TAB[i]
+    PID_KD = PID_KD_TAB[i]
 
 var_xun_xian_yan_se = 1  # 巡线颜色：黑 = 1，白 = 0
 var_zhuan_wan_su_du = 40 # 「转到线」的转弯速度（固定 40）
@@ -99,11 +105,8 @@ PID_TURN_7 = [1, 4, 7, 4]
 #  循迹卡 ： trace.GetTraceV2I2CState(P1端口, i)
 #  var_xun_xian_yan_se ： 黑线 = 1，白线 = 0
 def use_trace():
-    # 当前是否用循迹卡（7 光电）
-    m = PID_FORCE_MODE
-    if m == 0:
-        m = rcu.GetData(PID_MODE_ADDR)
-    return m == PID_MODE_TRACE
+    # 当前是否用循迹卡（7 光电）：E007 == 7
+    return mode_idx() == 1
 
 def on_line(i):
     # 第 i 路是否压线
@@ -148,7 +151,7 @@ def chai_zhi_reset():
 def chai_zhi_xun_xian_once(su_du):
     # 4 光电差值巡线，跑一个周期
     global _cz_last_err, _cz_integral, _cz_first
-    apply_motor_param()          # 按 E005 装载当前电机的 Kp4 / Ki4 / Kd4
+    apply_param()                # 按 E005 + E007 装载当前生效的 Kp / Ki / Kd
     var_wu_cha_zhi = sensor.GetLightSensor(3) - sensor.GetLightSensor(2)
 
     # ---- I 项：累加 + 限幅（防止积分饱和）----
@@ -165,9 +168,9 @@ def chai_zhi_xun_xian_once(su_du):
     else:
         var_wei_fen = var_wu_cha_zhi - _cz_last_err
 
-    var_zhuan_dong_su_du = (var_wu_cha_zhi * PID_KP4
-                            + _cz_integral * PID_KI4
-                            + var_wei_fen * PID_KD4)
+    var_zhuan_dong_su_du = (var_wu_cha_zhi * PID_KP
+                            + _cz_integral * PID_KI
+                            + var_wei_fen * PID_KD)
 
     if var_xun_xian_yan_se == 1:
         speed_control(dead_zone(su_du - var_zhuan_dong_su_du),
@@ -201,7 +204,7 @@ def xunxian_once(speed=None):
     #   循迹卡 -> 重心法（下面这段）
     global _pid_integral, _pid_last_err, _pid_last_sign, _pid_was_lost, _pid_first
 
-    apply_motor_param()          # 按 E005 装载当前电机的 Kp / Ki / Kd / 基础速度
+    apply_param()                # 按 E005 + E007 装载当前生效的 Kp / Ki / Kd
 
     if speed is None:
         speed = PID_BASE
@@ -402,7 +405,11 @@ def turn_bmz(spl, spr, bmp):
 # ---------------- 不用积木也能用的几个提示 ----------------
 # 编码值清空 :  motor.SetMotorCode(1) ; motor.SetMotorCode(2)
 # 蜂鸣器     :  rcu.SetInBeep(1) ; rcu.SetWaitForTime(0.1) ; rcu.SetInBeep(0)
-# 读地址     :  if rcu.GetData(7) == 7:      # E007 = 7 表示用循迹卡
+# 读电机类型 :  if rcu.GetData(5) == 2:      # E005 = 2 表示灰红电机
+# 读阵列类型 :  if rcu.GetData(7) == 7:      # E007 = 7 表示用循迹卡
+# 改 PID 参数 :  直接改上面的 PID_KP_TAB / PID_KI_TAB / PID_KD_TAB 四组表即可
+#                下标 = 电机序号*2 + 阵列序号
+#                [0]白红+4光电 [1]白红+循迹卡 [2]灰红+4光电 [3]灰红+循迹卡
 
 # ============================================================
 #  主程序（下面这段就是你在图形界面里拖积木拖出来的部分）
@@ -412,36 +419,14 @@ def turn_bmz(spl, spr, bmp):
 #      黑线 -> 压线判断用  == 1 ；白线 ->  == 0
 var_xun_xian_yan_se = 1
 
-# ---- 设置PID 电机 [白红电机] Kp [0.8] Ki [0] Kd [1.6] 基础速度 [50] ----
-#      这一组是「循迹卡（7 光电）重心法」参数，按电机类型分开存
-PID_KP_TAB[0] = 0.8
-PID_KI_TAB[0] = 0
-PID_KD_TAB[0] = 1.6
-PID_BASE_TAB[0] = 50
-
-# ---- 设置PID 电机 [灰红电机] Kp [0.4] Ki [0] Kd [1.6] 基础速度 [50] ----
-#      灰红电机摇摆明显 -> Kp 减半（Kd 相对更大，阻尼比更高）
-PID_KP_TAB[1] = 0.4
-PID_KI_TAB[1] = 0
-PID_KD_TAB[1] = 1.6
-PID_BASE_TAB[1] = 50
-
-# ---- 设置4光电PID 电机 [白红电机] Kp [0.015] Ki [0] Kd [0.03] ----
-#      4 光电差值法用的是原始光值差，量纲和上面那组完全不同
-PID_KP4_TAB[0] = 0.015
-PID_KI4_TAB[0] = 0
-PID_KD4_TAB[0] = 0.03
-
-# ---- 设置4光电PID 电机 [灰红电机] Kp [0.01] Ki [0] Kd [0.03] ----
-PID_KP4_TAB[1] = 0.01
-PID_KI4_TAB[1] = 0
-PID_KD4_TAB[1] = 0.03
-
-# ------------------------------------------------------------
-#  以上四个积木把两种电机、两种阵列的参数都填好了。
-#  程序运行时按 E005（马达类型：1=白红 2=灰红）自动选用对应那一列，
-#  你换电机不用改程序。
-# ------------------------------------------------------------
+# ---- 设置PID 的积木已经取消了 ----
+#      Kp / Ki / Kd 不再由积木填写，全部写死在底层上面那四组参数表里：
+#          PID_KP_TAB / PID_KI_TAB / PID_KD_TAB
+#          下标 = 电机序号*2 + 阵列序号
+#              [0] 白红 + 4 光电   [1] 白红 + 循迹卡
+#              [2] 灰红 + 4 光电   [3] 灰红 + 循迹卡
+#      程序运行时按 E005（马达类型）和 E007（阵列类型）自动挑一组，
+#      换电机 / 换阵列都不用改程序。要微调参数就直接改那三行表。
 
 # ---- 巡线遇路口停 速度 [50] 路口类型 [左路口] 调整编码值 [0] ----
 #      调整编码值 = 0 -> 遇到左路口立刻停（停车时会响一声提示音）

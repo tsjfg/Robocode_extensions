@@ -36,8 +36,9 @@ class PIDXunXian0001E6E7M6Block {
 #           巡线  -> 重心法：权重 [-3,-2,-1,0,+1,+2,+3]，error 归一化到 ±100
 #           压线  -> trace.GetTraceV2I2CState(P1端口, i) == var_xun_xian_yan_se
 #
-#  PID 参数（Kp / Ki / Kd）不在积木里填，全部写死在下面的四组参数表里，
-#  运行时按 E005（电机类型）× E007（阵列类型）自动选用其中一组。
+#  PID 参数（Kp / Ki / Kd）默认写死在下面的四组参数表里，
+#  运行时按 E005（电机类型）× E007（阵列类型）自动选用其中一组；
+#  如果程序里用了「设置PID Kp Ki Kd」积木，就改用积木里填的那一组值。
 # ============================================================
 
 # ------- 地址定义 -------
@@ -67,6 +68,15 @@ PID_OUT_ADDR   = 6       # E006：小车冲出路口的编码值（「+冲出」
 PID_KP_TAB = [0.015, 0.80, 0.010, 0.40]
 PID_KI_TAB = [0.000, 0.00, 0.000, 0.00]
 PID_KD_TAB = [0.030, 1.60, 0.030, 1.60]
+
+# ------- 手动覆盖开关：由积木「设置PID Kp Ki Kd」置 1 -------
+#   积木没用 -> PID_USE_SET 保持 0 -> 按 E005 × E007 用上面四组默认表
+#   积木用了 -> PID_USE_SET = 1    -> 直接用积木里填的 Kp / Ki / Kd（四组表暂时失效）
+#   想回到默认表：把那个积木删掉即可
+PID_USE_SET = 0
+PID_KP_SET  = 0.0
+PID_KI_SET  = 0.0
+PID_KD_SET  = 0.0
 
 # ------- 当前生效值（由 apply_param() 按 E005 + E007 装载）-------
 PID_KP   = PID_KP_TAB[0]
@@ -103,7 +113,13 @@ def param_idx():
 def apply_param():
     # 按 E005 + E007 把对应那一组装载到「当前生效值」上
     # 每个巡线周期调用一次，所以中途换电机 / 换阵列也能立刻生效
+    # 如果积木「设置PID Kp Ki Kd」用过（PID_USE_SET = 1），就直接用积木里填的值
     global PID_KP, PID_KI, PID_KD
+    if PID_USE_SET == 1:
+        PID_KP = PID_KP_SET
+        PID_KI = PID_KI_SET
+        PID_KD = PID_KD_SET
+        return
     i = param_idx()
     PID_KP = PID_KP_TAB[i]
     PID_KI = PID_KI_TAB[i]
@@ -428,6 +444,8 @@ def turn_bmz(spl, spr, bmp):
 # 改 PID 参数 :  直接改上面的 PID_KP_TAB / PID_KI_TAB / PID_KD_TAB 四组表即可
 #                下标 = 电机序号*2 + 阵列序号
 #                [0]白红+4光电 [1]白红+循迹卡 [2]灰红+4光电 [3]灰红+循迹卡
+# 手动覆盖   :  PID_KP_SET = 0.9 ; PID_KI_SET = 0 ; PID_KD_SET = 0.5 ; PID_USE_SET = 1
+#                （这就是「设置PID Kp Ki Kd」积木生成的四行；四组表会被跳过）
 `;
 
         return {
@@ -447,6 +465,29 @@ def turn_bmz(spl, spr, bmp):
                     // 用积木体（而非 definition_variables）赋值：
                     // 底层定义一定在程序最前面，积木体在它之后，所以这里一定能覆盖默认值
                     return `var_xun_xian_yan_se = ${line_color}\r\n`;
+                },
+
+                // 设置PID参数：用过这个积木 -> 用积木里填的 Kp / Ki / Kd
+                //               没用过     -> 底层四组默认表按 E005 × E007 自动选
+                block_pidset: function (block) {
+                    (ScratchBlocks.Python.Import("rcu"),
+                        ScratchBlocks.Python.Import("math"),
+                        ScratchBlocks.Python.Import("motor"),
+                        ScratchBlocks.Python.Import("sensor"),
+                        ScratchBlocks.Python.Import("trace"));
+
+                    let kp = ScratchBlocks.Python.valueToCode(block, "kp", 16);
+                    let ki = ScratchBlocks.Python.valueToCode(block, "ki", 16);
+                    let kd = ScratchBlocks.Python.valueToCode(block, "kd", 16);
+
+                    ScratchBlocks.Python.functionNames_["PID巡线_底层"] = CORE;
+
+                    return (
+                        `PID_KP_SET = ${kp}\r\n` +
+                        `PID_KI_SET = ${ki}\r\n` +
+                        `PID_KD_SET = ${kd}\r\n` +
+                        `PID_USE_SET = 1\r\n`
+                    );
                 },
 
                 // 巡线遇路口停
@@ -561,6 +602,25 @@ def turn_bmz(spl, spr, bmp):
                             type: "string",
                             menu: "menu_line_color",
                             defaultValue: "1",
+                        },
+                    },
+                },
+                {
+                    opcode: "block_pidset",
+                    blockType: "command",
+                    text: "设置PID Kp [kp] Ki [ki] Kd [kd]",
+                    arguments: {
+                        kp: {
+                            type: "number",
+                            defaultValue: "0.8",
+                        },
+                        ki: {
+                            type: "number",
+                            defaultValue: "0",
+                        },
+                        kd: {
+                            type: "number",
+                            defaultValue: "1.6",
                         },
                     },
                 },
@@ -710,6 +770,7 @@ def turn_bmz(spl, spr, bmp):
     }
 
     block_init(args) {}
+    block_pidset(args) {}
     block_junction(args) {}
     block_xdistance(args) {}
     block_turnline(args) {}

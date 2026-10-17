@@ -142,10 +142,54 @@ def use_trace():
     # 当前是否用循迹卡（7 光电）：E007 == 7
     return mode_idx() == 1
 
+# ------- 循迹卡「压线电平」-------
+#  循迹卡通道值有两种约定，不同批次/固件不一样：
+#      A. 1 = 检测到线（不分黑白，卡自己带阈值）
+#      B. 1 = 看到亮/白（跟 4 光电一样，看的是相对光值的正负）
+#  写死一个值，总有一种线会「巡反」——这就是黑线能巡、白线巡不了的原因。
+#
+#  白线：两种约定下「压线那一格都是 1」（A 是检测到线，B 是看到白），
+#        所以白线不用猜，直接就是 1。
+#  黑线：两种约定分叉（A -> 1，B -> 0），这时数一下阵列自己判：
+#        线是窄的，压线的通道一定少于不压线的通道 -> 少数派那个电平就是「压线」。
+#        全 0 或正好 4 个（可能压在路口/横线上）判不出来，就先按设定值，下个周期再判。
+#  PID_TRACE_LEVEL：-1 = 自动判定（推荐）；0 / 1 = 手动强制
+PID_TRACE_LEVEL = -1
+_trace_level = -1
+_trace_var   = -1
+
+def trace_level():
+    global _trace_level, _trace_var
+    if _trace_var != var_xun_xian_yan_se:
+        # 巡线颜色被改了（黑线地图 <-> 白线地图切换），电平要重新判定
+        _trace_level = -1
+        _trace_var   = var_xun_xian_yan_se
+    if _trace_level >= 0:
+        return _trace_level
+    if PID_TRACE_LEVEL >= 0:
+        _trace_level = PID_TRACE_LEVEL
+        return _trace_level
+    if var_xun_xian_yan_se == 0:
+        # 白线：A、B 两种约定压线都是 1
+        _trace_level = 1
+        return _trace_level
+    # 黑线：数一遍阵列，少数派那个电平就是压线
+    n1 = 0
+    for i in range(7):
+        if trace.GetTraceV2I2CState(PID_TRACE_PORT, i + 1) == 1:
+            n1 = n1 + 1
+    if 1 <= n1 <= 3:
+        _trace_level = 1            # 少数通道读到 1 -> 1 就是压线（约定 A）
+    elif n1 >= 5:
+        _trace_level = 0            # 多数通道读到 1 -> 0 才是压线（约定 B）
+    else:
+        return var_xun_xian_yan_se  # 全 0 或正好 4 个，分不清，下个周期再判
+    return _trace_level
+
 def on_line(i):
     # 第 i 路是否压线
     if use_trace():
-        return trace.GetTraceV2I2CState(PID_TRACE_PORT, i) == var_xun_xian_yan_se
+        return trace.GetTraceV2I2CState(PID_TRACE_PORT, i) == trace_level()
     return sensor.GetLightSensorData(i) == var_xun_xian_yan_se
 
 def read_black(i):
@@ -373,11 +417,12 @@ def xunxian_stop_junction(speed, jtype, adjust=0):
     rcu.SetWaitForTime(0.1)
 
 def xunxian_distance(speed, bmp):
-    # 巡线走 bmp 个编码值
+    # 巡线走 bmp 个编码值（bmp 只取绝对值，负数也当正数）
     pid_reset()
+    target = math.fabs(bmp)
     motor.SetMotorCode(1)
     motor.SetMotorCode(2)
-    while math.fabs(motor.GetMotorCode(1)) < bmp:
+    while math.fabs(motor.GetMotorCode(1)) < target:
         xunxian_once(speed)
     motor.SetMotorStop(1)
     motor.SetMotorStop(2)
@@ -411,9 +456,16 @@ def turn_right_line():
 
 def go_straight(sp, bmp):
     # 走直线：用编码器差分做同步，走满 bmp 个编码值
+    #   sp  > 0 -> 前进        sp  < 0 -> 后退（速度带符号，负号就是倒退）
+    #   bmp 只取绝对值（跟原厂一致：编码只填正数，填了负数也当正数）
+    target = math.fabs(bmp)
+    if target == 0 or sp == 0:
+        return
+    sign = 1 if sp > 0 else -1
+    sp = math.fabs(sp)
     motor.SetMotorCode(1)
     motor.SetMotorCode(2)
-    while math.fabs(motor.GetMotorCode(1)) < bmp:
+    while math.fabs(motor.GetMotorCode(1)) < target:
         left = math.fabs(motor.GetMotorCode(1))
         right = math.fabs(motor.GetMotorCode(2))
         diff = left - right
@@ -421,16 +473,21 @@ def go_straight(sp, bmp):
         right_speed = sp + diff * 0.3
         left_speed = max(0, min(sp * 1.2, left_speed))
         right_speed = max(0, min(sp * 1.2, right_speed))
-        speed_control(left_speed, right_speed)
+        # sign 只在这里乘上去：同步逻辑全用正数算，最后整体翻方向
+        speed_control(dead_zone(sign * left_speed), dead_zone(sign * right_speed))
     motor.SetMotorStop(1)
     motor.SetMotorStop(2)
     rcu.SetWaitForTime(0.1)
 
 def turn_bmz(spl, spr, bmp):
     # 左右轮以不同速度转，任意一轮走满 bmp 个编码值就停
+    #   spl / spr 可以填负数（那就是反转），bmp 只取绝对值
+    target = math.fabs(bmp)
+    if target == 0:
+        return
     motor.SetMotorCode(1)
     motor.SetMotorCode(2)
-    while not (((math.fabs(motor.GetMotorCode(1))) > bmp) or ((math.fabs(motor.GetMotorCode(2))) > bmp)):
+    while not (((math.fabs(motor.GetMotorCode(1))) > target) or ((math.fabs(motor.GetMotorCode(2))) > target)):
         speed_control(spl, spr)
     motor.SetMotorStop(1)
     motor.SetMotorStop(2)
@@ -446,6 +503,9 @@ def turn_bmz(spl, spr, bmp):
 #                [0]白红+4光电 [1]白红+循迹卡 [2]灰红+4光电 [3]灰红+循迹卡
 # 手动覆盖   :  PID_KP_SET = 0.9 ; PID_KI_SET = 0 ; PID_KD_SET = 0.5 ; PID_USE_SET = 1
 #                （这就是「设置PID Kp Ki Kd」积木生成的四行；四组表会被跳过）
+# 白线巡不了 :  循迹卡看 PID_TRACE_LEVEL（-1 自动 / 0 / 1 强制）；
+#                4 光电要确认「初始化 巡线颜色」选的是白线
+# 后退       :  走距离 / 巡线距离 把速度填负数；编码值只填正数
 `;
 
         return {

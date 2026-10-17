@@ -6,11 +6,13 @@
 
 ## 🔌 拓展列表
 
-| 拓展 | 目录 | 说明 |
-| --- | --- | --- |
-| **数据测试** | `robocode拓展/test/` | 调试用拓展：舵机角度 / 马达编码值实时显示到屏幕，并提供 8 格触屏任务面板 |
-| **舵机狗** | `robocode拓展/舵机狗2/` | 四足舵机狗控制拓展：前进 / 后退 / 转向 / 站立 / 坐下 / 趴下 / 狗叫 / 抬腿 / 自定义姿势等 |
-| **PID巡线** | `robocode拓展/PID巡线/` | PID 巡线底层：4 光电 / 循迹卡双模式加权 PID，支持巡线、路口识别、直走与转编码值 |
+| 拓展 | 目录 | 说明 | 详细文档 |
+| --- | --- | --- | --- |
+| **数据测试** | `robocode拓展/test/` | 调试用拓展：舵机角度 / 马达编码值实时显示到屏幕，并提供 8 格触屏任务面板 | [README](./robocode%E6%8B%93%E5%B1%95/test/README.md) |
+| **舵机狗** | `robocode拓展/舵机狗2/` | 四足舵机狗控制拓展：前进 / 后退 / 转向 / 站立 / 坐下 / 趴下 / 狗叫 / 抬腿 / 自定义姿势等 | [README](./robocode%E6%8B%93%E5%B1%95/%E8%88%B5%E6%9C%BA%E7%8B%972/README.md) |
+| **PID巡线** | `robocode拓展/PID巡线/` | PID 巡线底层：4 光电 / 循迹卡双模式加权 PID，支持巡线、路口识别、直走与转编码值 | [README](./robocode%E6%8B%93%E5%B1%95/PID%E5%B7%A1%E7%BA%BF/README.md) |
+
+> 各拓展的完整说明（硬件接线、算法原理、参数速查、踩坑清单）见对应目录下的 `README.md`。
 
 ---
 
@@ -134,6 +136,7 @@ Robocode_extensions/
 ├── LICENSE                    # MIT 许可证
 └── robocode拓展/               # 拓展所在的根目录
     ├── test/                  # 拓展一：数据测试
+    │   ├── README.md          #   拓展详细文档
     │   ├── config.json        #   拓展元信息（平台读取）
     │   ├── index.js           #   积木逻辑定义
     │   ├── test.png           #   封面图
@@ -141,6 +144,7 @@ Robocode_extensions/
     │       ├── blockIcon/     #   积木图标（SVG）
     │       └── menuIcon/      #   菜单图标（SVG）
     ├── 舵机狗2/                # 拓展二：舵机狗
+    │   ├── README.md
     │   ├── config.json
     │   ├── index.js
     │   ├── OMEOGiWRIHpRTBrbIlzv.png
@@ -151,6 +155,7 @@ Robocode_extensions/
     │       ├── xm4077.mp3
     │       └── xm4081.mp3
     └── PID巡线/                # 拓展三：PID巡线
+        ├── README.md
         ├── config.json
         ├── index.js
         ├── PIDXunXian0001E6E7M6.png

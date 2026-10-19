@@ -1,7 +1,7 @@
 {
     "id": "PIDXunXian0001E6E7M6",
     "name": "PID巡线",
-    "description": "PID 巡线底层：4 光电 / 循迹卡 双模式加权 PID，支持 M6 / E6 / E7",
+    "description": "PID 巡线底层：4 光电差值法 / 循迹卡重心法，支持 M6 / E6 / E7",
     "icon": "",
     "cover": "PIDXunXian0001E6E7M6.png",
     "codeTypes": [

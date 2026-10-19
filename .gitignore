@@ -1,0 +1,10 @@
+# Python 字节码缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统 / 编辑器文件
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

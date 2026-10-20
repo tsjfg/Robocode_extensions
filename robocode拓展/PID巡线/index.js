@@ -114,6 +114,12 @@ PID_TURN_MAX   = 10000   # 「转到线」等线的保险丝（次），防止�
 PID_TRACE_PORT = 1       # 循迹卡插在哪个端口（P1~P8）
 PID_JUNC_EDGE  = 1       # 路口判定：最外侧连续几路压线才算。改成 2 可减少误判
 
+# 「走距离」的停滞保护：编码值连续这么久没有增长，就认为车已经走不动了
+#   单位是秒。填 0 表示关闭这个保护（回到原来「一直等下去」的行为）。
+#   注意它看的是「有没有进展」，不是「总共花了多久」——
+#   同样的编码值，速度调慢时耗时会成倍变长，按总时间卡死会把正常的长距离截断在半路。
+PID_GO_TIMEOUT = 3.0
+
 def motor_idx():
     # E005：1 = 白红 -> 0 ；2 = 灰红 -> 1 （异常值按白红处理）
     if rcu.GetData(PID_MOTOR_ADDR) == PID_MOTOR_GR:
@@ -595,10 +601,25 @@ def turn_right_line():
     speed_control(0, 0)
     rcu.SetWaitForTime(0.1)
 
+_go_stalled = False      # 上一次「走距离」是不是因为停滞保护提前退出的
+
+def go_stalled():
+    # 上一次「走距离」有没有卡住被强制结束。
+    #   正常走完 -> False
+    #   电机堵转 / 轮子被卡 / 编码器线没插上 -> True
+    # 需要区分「没走到位」和「正常走到了」的时候可以用它。
+    return _go_stalled
+
 def go_straight(sp, bmp):
     # 走直线：用编码器差分做同步，走满 bmp 个编码值
     #   sp  > 0 -> 前进        sp  < 0 -> 后退（速度带符号，负号就是倒退）
     #   bmp 只取绝对值（跟原厂一致：编码只填正数，填了负数也当正数）
+    #
+    # 停滞保护：编码值连续 PID_GO_TIMEOUT 秒（默认 3 秒）没有增长，
+    #   就判定车已经走不动了（电机堵转 / 轮子被卡 / 编码器没接上），
+    #   立刻停车并返回，让主程序继续执行下一条积木，不会把整场比赛卡死在这里。
+    #   只要车还在动，哪怕走得很慢也不会被这个保护打断。
+    global _go_stalled
     target = math.fabs(bmp)
     if target == 0 or sp == 0:
         return
@@ -606,7 +627,20 @@ def go_straight(sp, bmp):
     sp = math.fabs(sp)
     motor.SetMotorCode(1)
     motor.SetMotorCode(2)
-    while wheel_dist() < target:
+    _go_stalled = False
+    last_dist = wheel_dist()
+    t0 = time.time()
+    while True:
+        d = wheel_dist()
+        if d >= target:
+            break                       # 走够了
+        if PID_GO_TIMEOUT > 0:
+            if d > last_dist:
+                last_dist = d           # 有进展 -> 重新计时
+                t0 = time.time()
+            elif time.time() - t0 > PID_GO_TIMEOUT:
+                _go_stalled = True      # 停滞超时 -> 跳出，下面照常停车
+                break
         left = math.fabs(motor.GetMotorCode(1))
         right = math.fabs(motor.GetMotorCode(2))
         diff = left - right
@@ -667,6 +701,7 @@ def turn_bmz(spl, spr, bmp):
                 block_init: function (block) {
                     (ScratchBlocks.Python.Import("rcu"),
                         ScratchBlocks.Python.Import("math"),
+                        ScratchBlocks.Python.Import("time"),
                         ScratchBlocks.Python.Import("motor"),
                         ScratchBlocks.Python.Import("sensor"),
                         ScratchBlocks.Python.Import("trace"));
@@ -756,6 +791,7 @@ def turn_bmz(spl, spr, bmp):
                 block_gostraight: function (block) {
                     (ScratchBlocks.Python.Import("rcu"),
                         ScratchBlocks.Python.Import("math"),
+                        ScratchBlocks.Python.Import("time"),
                         ScratchBlocks.Python.Import("motor"),
                         ScratchBlocks.Python.Import("sensor"),
                         ScratchBlocks.Python.Import("trace"));

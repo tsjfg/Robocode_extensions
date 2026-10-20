@@ -1,0 +1,13 @@
+{
+    "id": "MecanumWheelExt26Z",
+    "name": "麦轮底盘",
+    "description": "四轮麦伦(麦克纳姆)底盘扩展: 官方角度公式驱动 + 编码器闭环直行/侧移/斜移/转向 + 灰度定位停车 + PD巡线, 均带超时保护",
+    "icon": "img/icon.png",
+    "cover": "cover.png",
+    "codeTypes": [
+        "Python"
+    ],
+    "order": "1",
+    "supportDevice": ["E6", "E7", "M6"],
+    "official": false
+}

@@ -5,6 +5,7 @@ import motor
 import sensor
 import trace
 
+
 # ============================================================
 #  PID 巡线底层   —— 由「PID巡线」扩展自动生成
 #
@@ -89,10 +90,10 @@ PID_MAX_OUT    = 60      # 差速限幅（±）
 PID_MIN_SUM    = 30      # 黑度总和下限，低于此值（即一路都没压线）判为脱线
 PID_SIGN_TH    = 3       # 误差超过此值才记录方向（抗噪）
 PID_I4_LIMIT   = 20000   # 4 光电差值法的积分限幅（光值单位），防止积分饱和
-PID_EXIT_MAX   = 300     # 「开过路口」内循环的保险丝（次），防止路口位型一直不消失导致死循环
 PID_TURN_MAX   = 10000   # 「转到线」等线的保险丝（次），防止找不到线时原地转到天荒地老
 PID_TRACE_PORT = 1       # 循迹卡插在哪个端口（P1~P8）
 PID_JUNC_EDGE  = 1       # 路口判定：最外侧连续几路压线才算。改成 2 可减少误判
+PID_JUNC_HOLD  = 3       # 路口判定：连续这么多周期都命中才算真路口（防虚线误判）
 
 # 「走距离」的停滞保护：编码值连续这么久没有增长，就认为车已经走不动了
 #   单位是秒。填 0 表示关闭这个保护（回到原来「一直等下去」的行为）。
@@ -222,7 +223,7 @@ def trace_level():
     # 返回「压线时通道读到几」：
     #   0 / 1 = 判定成功
     #   -1    = 判不出（4:3 平局，或全 1 的路口）
-    #   -2    = 整排全 0（车不在线上）
+    #   -2    = 整排全 0（车不在线上，或「1=看到黑」的卡压在白线路口上）
     global _level_cache, _level_var
     if _level_var != line_color():
         # 巡线颜色被改了（黑线地图 <-> 白线地图切换），电平要重新判定
@@ -239,7 +240,7 @@ def trace_level():
     elif cnt == 5 or cnt == 6:
         _level_cache = 0            # 多数通道读到 1 -> 0 才是压线
     elif cnt == 0:
-        return -2                   # 整排全 0：车不在线上（不能缓存）
+        return -2                   # 整排全 0：不能缓存（含义见 refresh_level）
     else:
         return -1                   # 4 平局 / 7 全 1（路口），下个周期再判
     return _level_cache
@@ -251,10 +252,15 @@ def refresh_level():
     global _level_now
     lv = trace_level()
     if lv == -2:
-        # 整排全 0：一路都没压线。用一个「不可能等于 0 的读数」当电平，
-        # 让 on_line() 全部返回 False，这样才能触发脱线找线。
-        # （不管哪种固件约定，全 0 时都不可能「7 路全压线」）
-        _level_now = 1
+        # 整排全 0，两种可能：
+        #   a) 车真的不在线上（脱线 / 开机就在赛道外）
+        #   b) 「1=看到黑」型循迹卡 + 白线：整排压着黑色横线路口
+        # 保持上一周期的电平即可区分两者：
+        #   a) 上一周期判的是 1，全 0 一个都对不上 -> on_line() 全部 False
+        #      -> 正常触发脱线找线；
+        #   b) 上一周期判的是 0，全 0 全部命中 -> 路口能被识别出来。
+        # 首次调用时 _level_now 还是 -1，同样全部对不上，行为一致。
+        pass
     elif lv < 0:
         _level_now = line_color()   # 路口等判不出的情况：按颜色约定兜底
     else:
@@ -451,6 +457,9 @@ def xunxian_once(speed=None):
 #       右路口 -> 最右侧压线、最左侧不压线
 #       T路口  -> 两侧同时压线（横线穿过）
 #   PID_JUNC_EDGE 控制「最外侧连续几路压线才算」，默认 1（最灵敏）
+#   另外要求「正中心那一路压线」：真路口 = 横线 + 主线同时存在；
+#   虚线段整体偏到一侧时，最外侧虽然压线，但正中心是空的（线段偏出去了），
+#   这时候不是路口。只靠最外侧判据会把虚线误判成路口，车一到虚线就停。
 def junction_detect(jtype):
     n = 7 if use_trace() else 4
     k = PID_JUNC_EDGE
@@ -465,12 +474,21 @@ def junction_detect(jtype):
             left = False        # 最左边第 i+1 路没压线
         if not on_line(n - i):
             right = False       # 最右边第 i+1 路没压线
+    # 主线是否还在：正中心那一路（7 路取第 4 路，4 路取第 2/3 路）压线。
+    # 真路口 = 横线 + 主线同时存在，主线一定压在阵列正中心；
+    # 虚线段整体偏到一侧时，最外侧虽然压线，但正中心是空的
+    #（线段偏出去了，车正压在段沿上），这时候不是路口。
+    # 只靠最外侧判据会把虚线误判成路口，车一到虚线就停。
+    if n >= 7:
+        mid = on_line(4)
+    else:
+        mid = on_line(2) or on_line(3)
     if jtype == 1:
-        return left and not right
+        return left and mid and not right
     if jtype == 2:
-        return right and not left
+        return right and mid and not left
     if jtype == 3:
-        return left and right
+        return left and right and mid
     return False
 
 # ---------------- 巡线封装 ----------------
@@ -493,9 +511,11 @@ def xunxian_stop_junction(speed, jtype, adjust=0):
     # jtype : 1 左路口 / 2 右路口 / 3 T路口
     #         4 左路口+冲出 / 5 右路口+冲出 / 6 T路口+冲出
     # adjust: 调整的编码值（默认 0，可正可负）
-    #         正数 -> 过路口后继续笔直前进；负数 -> 笔直倒退
+    #         不带冲出 -> 停稳之后直接微调：正数前进、负数后退
+    #                    （不用先冲出再倒回来，一步到位）
     #         带冲出   -> 冲出距离 = E006 + adjust
-    #         不带冲出 -> 直接走 adjust 个编码值（0 即「遇到路口立刻停」）
+    # 停车序列（找到路口后固定动作）：
+    #   速度归 0 -> 等 0.1s -> 鸣笛 -> 等 0.1s
     # 巡线类积木只支持正速度：
     #   倒退巡线时左右轮的修正方向是反的（车尾朝前），PID 会越修越偏。
     #   速度 <= 0 直接返回，避免用户填负数后车乱跑或空转卡死。
@@ -513,25 +533,34 @@ def xunxian_stop_junction(speed, jtype, adjust=0):
     if jtype > 3:
         out_flag = 1
         jtype = jtype - 3
+    # 找到路口立刻退出巡线循环：不再「开过路口区域」，
+    # 停点就是压线那一刻的车身位置，横线正中间，不冲过线。
+    # PID_JUNC_HOLD：连续这么多周期命中才算真路口。
+    #   虚线段偏到一侧造成的误判只持续一两个周期，挡得住；
+    #   真路口是连续的横线，会持续命中，不受影响（最多晚两周期停）。
+    hold = 0
     while True:
         xunxian_once(speed)
         if junction_detect(jtype):
-            guard = 0
-            while junction_detect(jtype) and guard < PID_EXIT_MAX:
-                # 先开过路口区域，避免同一个路口被重复计数
-                # guard 是保险丝：路口位型一直不消失时，最多再跑 PID_EXIT_MAX 次就放行
-                xunxian_once(speed)
-                guard = guard + 1
-            if out_flag == 1:
-                run_straight_bmz(speed, rcu.GetData(PID_OUT_ADDR) + adjust)
-            else:
-                run_straight_bmz(speed, adjust)
-            break
+            hold = hold + 1
+            if hold >= PID_JUNC_HOLD:
+                break
+        else:
+            hold = 0
+    if out_flag == 1:
+        # 带冲出：检测到路口后笔直冲出 E006 + adjust
+        run_straight_bmz(speed, rcu.GetData(PID_OUT_ADDR) + adjust)
+    # 停车序列：速度先归 0，停稳 0.1s 再鸣笛，避免边滑行边叫
     speed_control(0, 0)
-    rcu.SetInBeep(1)          # 停车提示音
+    rcu.SetWaitForTime(0.1)
+    rcu.SetInBeep(1)
     rcu.SetWaitForTime(0.1)
     rcu.SetInBeep(0)
-    rcu.SetWaitForTime(0.1)
+    if out_flag == 0 and adjust != 0:
+        # 停稳之后的距离微调：正数笔直前进、负数笔直后退
+        run_straight_bmz(speed, adjust)
+        speed_control(0, 0)
+        rcu.SetWaitForTime(0.1)
 
 def xunxian_distance(speed, bmp):
     # 巡线走 bmp 个编码值（bmp 只取绝对值，负数也当正数）
@@ -674,7 +703,6 @@ def turn_bmz(spl, spr, bmp):
 # 量距离     :  wheel_dist()  = 两轮编码绝对值的平均，三个「走距离」类积木都用它
 #                （只读左轮会因打滑 / 曲线偏差而失准，单轮卡住还会死循环）
 
-# ============================================================
 #  主程序（下面这段就是你在图形界面里拖积木拖出来的部分）
 # ============================================================
 
@@ -695,7 +723,8 @@ set_line_color(1)
 set_pid_override(0.8, 0, 1.6)
 
 # ---- 巡线遇路口停 速度 [50] 路口类型 [左路口] 调整编码值 [0] ----
-#      调整编码值 = 0 -> 遇到左路口立刻停（停车时会响一声提示音）
+#      调整编码值 = 0 -> 遇到左路口立刻停
+#      停车动作固定为：两轮速度置 0 -> 等 0.1s -> 鸣笛 -> 等 0.1s
 xunxian_stop_junction(50, 1, 0)
 
 # ---- 左 转到线（转弯速度固定 40，在底层 var_zhuan_wan_su_du 里）----
@@ -706,11 +735,12 @@ turn_left_line()
 xunxian_stop_junction(50, 6, 0)
 
 # ---- 巡线遇路口停 速度 [50] 路口类型 [右路口] 调整编码值 [150] ----
-#      正数 -> 过右路口后继续笔直前进 150 个编码值才停
+#      正数 -> 停稳（鸣笛）之后，再笔直前进 150 个编码值
 xunxian_stop_junction(50, 2, 150)
 
 # ---- 巡线遇路口停 速度 [50] 路口类型 [左路口] 调整编码值 [-80] ----
-#      负数 -> 遇到左路口后笔直倒退 80 个编码值才停
+#      负数 -> 停稳（鸣笛）之后，再笔直倒退 80 个编码值
+#      不用先选「+冲出」冲过去、再倒回来，这里直接填负数一步到位
 xunxian_stop_junction(50, 1, -80)
 
 # ---- 巡线距离 速度 [50] 编码值 [1500] ----
